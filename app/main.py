@@ -1,80 +1,97 @@
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
-from app.models import Base, Food
-from app.schemas import FoodCreate, Food as FoodSchema, FoodUpdate
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel
+import jwt
+from datetime import datetime, timedelta
 
-# Configurações do banco de dados
-SQLALCHEMY_DATABASE_URL = "sqlite:///./food.db"
-
-# Criação do engine e da sessão do SQLAlchemy
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Criação do FastAPI app
 app = FastAPI()
 
-# Função para criar a sessão do banco
-def get_db():
-    db = SessionLocal()
+# Definindo um OAuth2PasswordBearer para autenticação de token
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# Chave secreta para JWT
+SECRET_KEY = "mysecretkey"
+ALGORITHM = "HS256"
+
+# Modelo de Usuário (exemplo simples)
+class User(BaseModel):
+    username: str
+
+# Simulando um banco de usuários
+fake_users_db = {
+    "admin": {
+        "username": "admin",
+        "password": "adminpassword",  # Em produção, use hash de senha
+    }
+}
+
+# Função para verificar o token
+def verify_token(token: str = Depends(oauth2_scheme)):
     try:
-        yield db
-    finally:
-        db.close()
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        return username
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-# Criação automática do banco de dados e das tabelas
-Base.metadata.create_all(bind=engine)
+# Função para gerar token
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(hours=1)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
-# População inicial de dados (opcional, apenas na primeira execução)
-with Session(engine) as session:
-    if not session.query(Food).first():  # Verifica se a tabela está vazia
-        initial_foods = [
-            Food(tipo="Fruta", nome="Maçã", imagem="link_para_imagem", preco=3),
-            Food(tipo="Vegetal", nome="Cenoura", imagem="link_para_imagem", preco=2),
-        ]
-        session.add_all(initial_foods)
-        session.commit()
+# Modelo para alimentos
+class Food(BaseModel):
+    nome: str
+    preco: float
+    tipo: str
+    imagem: str
 
-# Endpoints para manipular os alimentos
-@app.post("/foods/", response_model=FoodSchema)
-def create_food(food: FoodCreate, db: Session = Depends(get_db)):
-    db_food = Food(nome=food.nome, tipo=food.tipo, imagem=food.imagem, preco=food.preco)
-    db.add(db_food)
-    db.commit()
-    db.refresh(db_food)
-    return db_food
-  
-@app.get("/foods/")
-def read_all_foods(db: Session = Depends(get_db)):
-    return db.query(Food).all()
+foods_db = []
 
+# Rota pública (GET)
+@app.get("/foods")
+def get_foods():
+    return foods_db
 
-@app.get("/foods/{food_id}", response_model=FoodSchema)
-def read_food(food_id: int, db: Session = Depends(get_db)):
-    db_food = db.query(Food).filter(Food.id == food_id).first()
-    if db_food is None:
-        raise HTTPException(status_code=404, detail="Food not found")
-    return db_food
+# Rota protegida (POST)
+@app.post("/foods")
+def create_food(food: Food, username: str = Depends(verify_token)):
+    if username != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    foods_db.append(food)
+    return {"message": "Food added successfully"}
 
-@app.put("/foods/{food_id}", response_model=FoodSchema)
-def update_food(food_id: int, food: FoodUpdate, db: Session = Depends(get_db)):
-    db_food = db.query(Food).filter(Food.id == food_id).first()
-    if db_food is None:
-        raise HTTPException(status_code=404, detail="Food not found")
+# Rota protegida (PUT/PATCH)
+@app.put("/foods/{food_id}")
+def update_food(food_id: int, food: Food, username: str = Depends(verify_token)):
+    if username != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    if 0 <= food_id < len(foods_db):
+        foods_db[food_id] = food
+        return {"message": "Food updated successfully"}
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Food not found")
 
-    for key, value in food.dict(exclude_unset=True).items():
-        setattr(db_food, key, value)
+# Rota protegida (DELETE)
+@app.delete("/foods/{food_id}")
+def delete_food(food_id: int, username: str = Depends(verify_token)):
+    if username != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    if 0 <= food_id < len(foods_db):
+        del foods_db[food_id]
+        return {"message": "Food deleted successfully"}
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Food not found")
 
-    db.commit()
-    db.refresh(db_food)
-    return db_food
-
-@app.delete("/foods/{food_id}", response_model=FoodSchema)
-def delete_food(food_id: int, db: Session = Depends(get_db)):
-    db_food = db.query(Food).filter(Food.id == food_id).first()
-    if db_food is None:
-        raise HTTPException(status_code=404, detail="Food not found")
-
-    db.delete(db_food)
-    db.commit()
-    return db_food
+# Rota para gerar o token de autenticação
+@app.post("/token")
+def login_for_access_token(form_data: OAuth2PasswordBearer):
+    user = fake_users_db.get(form_data.username)
+    if not user or user["password"] != form_data.password:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
+    
+    access_token = create_access_token(data={"sub": form_data.username})
+    return {"access_token": access_token, "token_type": "bearer"}
