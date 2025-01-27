@@ -43,6 +43,11 @@ def create_food(food: FoodCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_food)
     return db_food
+  
+@app.get("/foods/")
+def read_all_foods(db: Session = Depends(get_db)):
+    return db.query(Food).all()
+
 
 @app.get("/foods/{food_id}", response_model=FoodSchema)
 def read_food(food_id: int, db: Session = Depends(get_db)):
