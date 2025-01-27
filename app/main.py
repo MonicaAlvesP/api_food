@@ -5,7 +5,7 @@ from app.models import Base, Food
 from app.schemas import FoodCreate, Food as FoodSchema, FoodUpdate
 
 # Configurações do banco de dados
-SQLALCHEMY_DATABASE_URL = "sqlite:///./food.db"  # O caminho do seu banco SQLite
+SQLALCHEMY_DATABASE_URL = "sqlite:///./food.db"
 
 # Criação do engine e da sessão do SQLAlchemy
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
@@ -22,11 +22,20 @@ def get_db():
     finally:
         db.close()
 
-# Criação do banco de dados, se não existir
+# Criação automática do banco de dados e das tabelas
 Base.metadata.create_all(bind=engine)
 
-# Endpoints para manipular os alimentos
+# População inicial de dados (opcional, apenas na primeira execução)
+with Session(engine) as session:
+    if not session.query(Food).first():  # Verifica se a tabela está vazia
+        initial_foods = [
+            Food(tipo="Fruta", nome="Maçã", imagem="link_para_imagem", preco=3),
+            Food(tipo="Vegetal", nome="Cenoura", imagem="link_para_imagem", preco=2),
+        ]
+        session.add_all(initial_foods)
+        session.commit()
 
+# Endpoints para manipular os alimentos
 @app.post("/foods/", response_model=FoodSchema)
 def create_food(food: FoodCreate, db: Session = Depends(get_db)):
     db_food = Food(nome=food.nome, tipo=food.tipo, imagem=food.imagem, preco=food.preco)
